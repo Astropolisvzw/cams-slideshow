@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "cams-slideshow"
+version = "0.1.0"
+description = "showing the CAMS images in a fullscreen slideshow"
+authors = ["Mike Rosseel <mike.rosseel@gmail.com>"]
+readme = "README.md"
+packages = [{include = "cams_slideshow"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+pillow = "^9.4.0"
+everything-tkinter = "^0.2"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
