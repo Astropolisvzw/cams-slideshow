@@ -10,7 +10,12 @@ packages = [{include = "cams_slideshow"}]
 python = "^3.11"
 pillow = "^9.4.0"
 everything-tkinter = "^0.2"
+astropy = "^5.2.1"
+matplotlib = "^3.7.2"
 
+
+[tool.poetry.group.dev.dependencies]
+jupyter = "^1.0.0"
 
 [build-system]
 requires = ["poetry-core"]
