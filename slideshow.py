@@ -26,7 +26,7 @@ class Application():
 
     def resize_image(self, img, max_width, max_height):
         """Resizes an image proportionally to fit within the given width and height."""
-        print(f"resizing image to {max_width}x{max_height}, {type(img)}, {dir(img)}")
+        print(f"resizing image to {max_width}x{max_height}, {type(img)}")
         width, height = img.size
         print(f"resizing image to {max_width}x{max_height}")
         aspect_ratio = width / height
@@ -39,13 +39,9 @@ class Application():
             new_width = int(new_height * aspect_ratio)
 
         resized_img = img.resize((new_width, new_height), Resampling.BICUBIC)
-        print(resized_img)
         new_img = Image.new("RGB", (width, height))
-        print(new_img)
         new_img.paste(resized_img, ((width - new_width) // 2, (height - new_height) // 2))
-        print(new_img)
         return new_img
-
 
     def convert_fits(self, fits_file, number):
         print(f"converting {fits_file} to slide{number:03d}.png")
@@ -78,9 +74,7 @@ class Application():
         resized_images = (self.resize_image(Image.open(p), width, height) for p in image_paths)
         print("resized_images:", resized_images)
         photoimages = map(ImageTk.PhotoImage, resized_images)
-        print(photoimages)
         paths_as_strings = [x.name for x in image_paths]
-        print(paths_as_strings)
         thezip = zip(paths_as_strings, photoimages)
         return thezip
 
@@ -93,7 +87,6 @@ class Application():
 
         image_paths = list(Path(path).glob("slide*.png"))
         image_paths.sort()
-        print("image_paths:", image_paths)
         width = self.window.winfo_width()
         height = self.window.winfo_height()
         # print('the list:', list(image_paths), type(image_paths))
