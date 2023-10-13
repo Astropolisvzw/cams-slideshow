@@ -58,8 +58,8 @@ class Application():
         new_img.paste(resized_img, ((width - new_width) // 2, (height - new_height) // 2))
         return new_img
 
-    def convert_fits(self, fits_file, number):
-        logging.debug(f"converting {fits_file} to slide{number:03d}.png")
+    def convert_fits(self, fits_file, number, path):
+        logging.debug(f"converting {fits_file} to {path}/slide{number:03d}.png")
         plt.style.use(astropy_mpl_style)
         # f = '/Users/mike/dev/astropolis/cams-slideshow/data/BE000D_20220713_205043_342065_detected/FF_BE000D_20220713_211249_360_0033024.fits'
 
@@ -70,18 +70,17 @@ class Application():
         plt.axis('off')  # Turn off the axis
 
         # Save the figure without any surrounding whitespace
-        output_filename = f"slide{number:03d}.png"  # specify the path where you want to save the image
+        output_filename = f"{path}/slide{number:03d}.png"  # specify the path where you want to save the image
         plt.savefig(output_filename, bbox_inches='tight', pad_inches=0, dpi=300)
 
         # Close the figure
         plt.close()
 
     def convert_all_fits(self, path):
-        from pathlib import Path
         fits_files = Path(path).glob("*.fits")
         for number, fits_file in enumerate(fits_files):
             try:
-                self.convert_fits(fits_file, number)
+                self.convert_fits(fits_file, number, path)
             except UnidentifiedImageError:
                 logging.error(f"could not convert {fits_file}")
 
