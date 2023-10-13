@@ -187,6 +187,11 @@ if __name__ == "__main__":
     parser.add_argument('-n', '--no-update', action='store_true', help='Do not update the images')
 
     args = parser.parse_args()
+    # Get the logger for the 'PIL' library
+    pil_logger = logging.getLogger('PIL')
+
+    # Set the logging level to INFO to suppress DEBUG messages
+    pil_logger.setLevel(logging.INFO)
 
     if args.image_directory and not Path(args.image_directory).is_dir():
         logging.debug(f"Error: {args.image_directory} is not a valid directory.")
