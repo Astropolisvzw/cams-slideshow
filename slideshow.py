@@ -160,7 +160,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if not Path(args.image_directory).is_dir():
+    if args.image_directory and not Path(args.image_directory).is_dir():
         logging.debug(f"Error: {args.image_directory} is not a valid directory.")
         exit(1)
 
