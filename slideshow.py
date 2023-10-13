@@ -154,7 +154,7 @@ def main(image_dir):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Process some images.')
-    parser.add_argument('-i', '--image_directory', type=str, help='The directory of images to process', required=True)
+    parser.add_argument('-i', '--image_directory', type=str, help='The directory of images to process')
     parser.add_argument('-f', '--fetch_latest_images', action='store_true', help='Fetch images before processing')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
 
@@ -172,6 +172,6 @@ if __name__ == "__main__":
         fetch_latest_dir()
     else:
         application = Application()
-        application.set_image_directory(args.image_directory)
+        application.set_image_directory(args.image_directory if args.image_directory else 'current')
         logging.debug("Slideshow mode")
         sys.exit(main(args.image_directory))
