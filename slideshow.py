@@ -119,8 +119,9 @@ class Application():
         self.window.title(name)
         self.window.after(self.duration_ms, self.display_next_slide)
 
-    def start(self):
-        check_time_and_run()
+    def start(self, no_update):
+        if not no_update:
+            check_time_and_run()
         self.display_next_slide()
 
 
@@ -178,19 +179,12 @@ def check_time_and_run():
         has_run_today = False
 
 
-def main(image_dir):
-    try:
-        application.start()
-        application.window.mainloop()
-    except:
-        logging.error("Unexpected error: %s", sys.exc_info()[0])
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Process some images.')
     parser.add_argument('-i', '--image_directory', type=str, help='The directory of images to process')
     parser.add_argument('-f', '--fetch_latest_images', action='store_true', help='Fetch images before processing')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
+    parser.add_argument('-n', '--no-update', action='store_true', help='Do not update the images')
 
     args = parser.parse_args()
 
@@ -205,7 +199,12 @@ if __name__ == "__main__":
         logging.debug("Fetching images")
         fetch_latest_dir()
     else:
-        application = Application()
-        application.set_image_directory(args.image_directory if args.image_directory else 'current')
-        logging.debug("Slideshow mode")
-        sys.exit(main(args.image_directory))
+        try:
+            logging.debug("Slideshow mode")
+            image_dir = args.image_directory if args.image_directory else 'current'
+            application = Application()
+            application.set_image_directory(image_dir)
+            application.start(args.no_update)
+            application.window.mainloop()
+        except:
+            logging.error("Unexpected error: %s", sys.exc_info()[0])
