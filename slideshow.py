@@ -12,10 +12,16 @@ import subprocess
 import re
 import argparse
 from pathlib import Path
+from itertools import cycle
 import logging
 import sys
 import shutil
 import os
+import glob
+import datetime
+
+
+has_run_today = False
 
 
 class Application():
@@ -88,10 +94,8 @@ class Application():
         return thezip
 
     def set_image_directory(self, path):
-        from pathlib import Path
-        from itertools import cycle
         logging.debug("converting all fits")
-        # self.convert_all_fits(path)
+        self.convert_all_fits(path)
         logging.debug("converting all fits done")
 
         image_paths = list(Path(path).glob("slide*.png"))
@@ -116,6 +120,7 @@ class Application():
         self.window.after(self.duration_ms, self.display_next_slide)
 
     def start(self):
+        check_time_and_run()
         self.display_next_slide()
 
 
@@ -123,25 +128,54 @@ def fetch_latest_dir():
     # Step 1: SSH into the machine and list the directories in the specified folder
     cmd = "ssh pi@10.10.0.113 'ls RMS_data/ArchivedFiles'"
     result = subprocess.check_output(cmd, shell=True).decode("utf-8")
-    logging.debug(f"result: {result}")
 
     # Convert the result to a list of directories
     directories = result.splitlines()
-    logging.debug(f"directories: {directories}")
 
     # Step 2: Find the latest directory based on the naming convention
     directories.sort(key=lambda x: (re.search(r'(\d{4})(\d{2})(\d{2})', x).groups() if re.search(r'(\d{4})(\d{2})(\d{2})', x) else (0,0,0)), reverse=True)
     latest_directory = directories[0]
-    logging.debug(f"latest_directory: {latest_directory}")
+    logging.info(f"latest_directory found: {latest_directory}")
 
     # Step 3: Prepare directories for rsync_cmd
     shutil.rmtree('latest', ignore_errors=True)
     os.mkdir('latest')
 
-    # Step 3: Use rsync to fetch the latest directory
+    # Step 4: Use rsync to fetch the latest directory
     rsync_cmd = f'rsync -r -av -v -e ssh "pi@10.10.0.113:/home/pi/RMS_data/ArchivedFiles/{latest_directory}/*" ./latest/'
     subprocess.call(rsync_cmd, shell=True)
     logging.debug(f"rsync_cmd: {rsync_cmd} - done")
+
+    # Step 5: Check the number of *.fits files in the 'latest' directory
+    fits_files_count = len(glob.glob('latest/*.fits'))
+    logging.debug(f"Number of *.fits files: {fits_files_count}")
+
+    if fits_files_count > 0:
+        # If there are more than 0 *.fits files:
+
+        # Step 5: Delete 'current_old' directory if it exists
+        shutil.rmtree('current_old', ignore_errors=True)
+
+        # Step 6: Rename 'current' to 'current_old' if 'current' exists
+        if os.path.exists('current'):
+            os.rename('current', 'current_old')
+
+        # Step 7: Rename 'latest' to 'current'
+        os.rename('latest', 'current')
+        logging.info("Successfully fetched latest images")
+    else:
+        logging.info("No *.fits files found in 'latest' directory")
+
+
+def check_time_and_run():
+    global has_run_today
+    now = datetime.datetime.now()
+
+    if now.hour >= 9 and not has_run_today:
+        fetch_latest_dir()
+        has_run_today = True
+    elif now.hour < 9:
+        has_run_today = False
 
 
 def main(image_dir):
