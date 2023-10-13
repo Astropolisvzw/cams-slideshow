@@ -78,7 +78,11 @@ class Application():
         plt.close()
 
     def convert_all_fits(self, path):
-        fits_files = Path(path).glob("*.fits")
+        fits_files = list(Path(path).glob("*.fits"))
+        png_files = list(Path(path).glob("slide*.png"))
+        if len(fits_files) == len(png_files):
+            logging.debug("all fits already converted")
+            return
         for number, fits_file in enumerate(fits_files):
             try:
                 self.convert_fits(fits_file, number, path)
@@ -94,8 +98,8 @@ class Application():
         return thezip
 
     def set_image_directory(self, path):
-        this.image_dir = path
-        logging.debug("converting all fits")
+        self.image_dir = path
+        logging.debug("converting all fits in %s", path)
         self.convert_all_fits(path)
         logging.debug("converting all fits done")
 
@@ -214,6 +218,7 @@ if __name__ == "__main__":
             image_dir = args.image_directory if args.image_directory else 'current'
             application = Application()
             application.set_image_directory(image_dir)
+            logging.debug("Starting application")
             application.start(args.no_update)
             application.window.mainloop()
         except:
