@@ -25,6 +25,7 @@ has_run_today = False
 
 
 class Application():
+    image_dir = 'current'
 
     def __init__(self, *args, **kwargs):
         self.window = tk.Tk()
@@ -93,6 +94,7 @@ class Application():
         return thezip
 
     def set_image_directory(self, path):
+        this.image_dir = path
         logging.debug("converting all fits")
         self.convert_all_fits(path)
         logging.debug("converting all fits done")
@@ -120,7 +122,9 @@ class Application():
 
     def start(self, no_update):
         if not no_update:
-            check_time_and_run()
+            update = check_time_and_run()
+            if update:
+                self.set_image_directory(self.image_dir)
         self.display_next_slide()
 
 
@@ -174,8 +178,10 @@ def check_time_and_run():
     if now.hour >= 9 and not has_run_today:
         fetch_latest_dir()
         has_run_today = True
+        return True
     elif now.hour < 9:
         has_run_today = False
+    return False
 
 
 if __name__ == "__main__":
