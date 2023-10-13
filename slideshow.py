@@ -8,6 +8,15 @@ from astropy.utils.data import get_pkg_data_filename
 import tkinter as tk
 from PIL import Image, ImageTk
 from PIL.Image import Resampling
+import subprocess
+import re
+import argparse
+from pathlib import Path
+import logging
+import sys
+import shutil
+import os
+
 
 class Application():
 
@@ -26,13 +35,13 @@ class Application():
 
     def resize_image(self, img, max_width, max_height):
         """Resizes an image proportionally to fit within the given width and height."""
-        print(f"resizing image to {max_width}x{max_height}, {type(img)}")
+        logging.debug(f"resizing image to {max_width}x{max_height}, {type(img)}")
         width, height = img.size
-        print(f"resizing image to {max_width}x{max_height}")
+        logging.debug(f"resizing image to {max_width}x{max_height}")
         aspect_ratio = width / height
         new_width = min(max_width, width)
         new_height = int(new_width / aspect_ratio)
-        print(f"new size: {new_width}x{new_height}")
+        logging.debug(f"new size: {new_width}x{new_height}")
 
         if new_height > max_height:
             new_height = min(max_height, height)
@@ -44,7 +53,7 @@ class Application():
         return new_img
 
     def convert_fits(self, fits_file, number):
-        print(f"converting {fits_file} to slide{number:03d}.png")
+        logging.debug(f"converting {fits_file} to slide{number:03d}.png")
         plt.style.use(astropy_mpl_style)
         # f = '/Users/mike/dev/astropolis/cams-slideshow/data/BE000D_20220713_205043_342065_detected/FF_BE000D_20220713_211249_360_0033024.fits'
 
@@ -68,11 +77,11 @@ class Application():
             try:
                 self.convert_fits(fits_file, number)
             except UnidentifiedImageError:
-                print(f"could not convert {fits_file}")
+                logging.error(f"could not convert {fits_file}")
 
     def create_zip(self, image_paths, width, height):
         resized_images = (self.resize_image(Image.open(p), width, height) for p in image_paths)
-        print("resized_images:", resized_images)
+        logging.debug("resized_images: %s", resized_images)
         photoimages = map(ImageTk.PhotoImage, resized_images)
         paths_as_strings = [x.name for x in image_paths]
         thezip = zip(paths_as_strings, photoimages)
@@ -81,22 +90,22 @@ class Application():
     def set_image_directory(self, path):
         from pathlib import Path
         from itertools import cycle
-        print("converting all fits")
+        logging.debug("converting all fits")
         # self.convert_all_fits(path)
-        print("converting all fits done")
+        logging.debug("converting all fits done")
 
         image_paths = list(Path(path).glob("slide*.png"))
         image_paths.sort()
         width = self.window.winfo_width()
         height = self.window.winfo_height()
-        # print('the list:', list(image_paths), type(image_paths))
-        # print(list(map(lambda p: p, image_paths)))
+        # logging.debug('the list:', list(image_paths), type(image_paths))
+        # logging.debug(list(map(lambda p: p, image_paths)))
         thezip = self.create_zip(image_paths, width, height)
         # thezip = zip(map(lambda p: p.name, image_paths),
         #              map(ImageTk.PhotoImage, map(Image.open,
         #                                          image_paths)))
-        # print('zip:', list(thezip))
-        # print("length of thezip is", len(list(thezip)))
+        # logging.debug('zip:', list(thezip))
+        # logging.debug("length of thezip is", len(list(thezip)))
         self.images = cycle(thezip)
 
     def display_next_slide(self):
@@ -110,16 +119,59 @@ class Application():
         self.display_next_slide()
 
 
-def main():
+def fetch_latest_dir():
+    # Step 1: SSH into the machine and list the directories in the specified folder
+    cmd = "ssh pi@10.10.0.113 'ls RMS_data/ArchivedFiles'"
+    result = subprocess.check_output(cmd, shell=True).decode("utf-8")
+    logging.debug(f"result: {result}")
+
+    # Convert the result to a list of directories
+    directories = result.splitlines()
+    logging.debug(f"directories: {directories}")
+
+    # Step 2: Find the latest directory based on the naming convention
+    directories.sort(key=lambda x: (re.search(r'(\d{4})(\d{2})(\d{2})', x).groups() if re.search(r'(\d{4})(\d{2})(\d{2})', x) else (0,0,0)), reverse=True)
+    latest_directory = directories[0]
+    logging.debug(f"latest_directory: {latest_directory}")
+
+    # Step 3: Prepare directories for rsync_cmd
+    shutil.rmtree('latest', ignore_errors=True)
+    os.mkdir('latest')
+
+    # Step 3: Use rsync to fetch the latest directory
+    rsync_cmd = f'rsync -r -av -v -e ssh "pi@10.10.0.113:/home/pi/RMS_data/ArchivedFiles/{latest_directory}/*" ./latest/'
+    subprocess.call(rsync_cmd, shell=True)
+    logging.debug(f"rsync_cmd: {rsync_cmd} - done")
+
+
+def main(image_dir):
     try:
-        application = Application()
-        application.set_image_directory("/Users/mike/dev/astropolis/cams-slideshow/rsynctest/")
         application.start()
         application.window.mainloop()
     except:
-        print("Unexpected error:", sys.exc_info()[0])
+        logging.error("Unexpected error: %s", sys.exc_info()[0])
 
 
 if __name__ == "__main__":
-    import sys
-    sys.exit(main())
+    parser = argparse.ArgumentParser(description='Process some images.')
+    parser.add_argument('-i', '--image_directory', type=str, help='The directory of images to process', required=True)
+    parser.add_argument('-f', '--fetch_latest_images', action='store_true', help='Fetch images before processing')
+    parser.add_argument('--debug', action='store_true', help='Enable debug logging')
+
+    args = parser.parse_args()
+
+    if not Path(args.image_directory).is_dir():
+        logging.debug(f"Error: {args.image_directory} is not a valid directory.")
+        exit(1)
+
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG)
+
+    if args.fetch_latest_images:
+        logging.debug("Fetching images")
+        fetch_latest_dir()
+    else:
+        application = Application()
+        application.set_image_directory(args.image_directory)
+        logging.debug("Slideshow mode")
+        sys.exit(main(args.image_directory))
