@@ -163,12 +163,10 @@ class Application():
         self.window.title(name)
         self.window.after(self.duration_ms, self.display_next_slide)
 
-    def start(self, no_update):
-        if not no_update:
-            update = check_time_and_run()
-            if update:
-                self.set_image_directory(self.image_dir)
-        logging.debug("next slide")
+    def start(self):
+        update = check_time_and_run()
+        if update:
+            self.set_image_directory(self.image_dir)
         self.display_next_slide()
 
 
@@ -186,11 +184,11 @@ def fetch_latest_dir():
     logging.info(f"latest_directory found: {latest_directory}")
 
     # Step 3: Prepare directories for rsync_cmd
-    shutil.rmtree('latest', ignore_errors=True)
-    os.mkdir('latest')
+    # shutil.rmtree('latest', ignore_errors=True)
+    os.makedirs('latest', exist_ok=True)
 
     # Step 4: Use rsync to fetch the latest directory
-    rsync_cmd = f'rsync -r -av -v -e ssh "pi@10.10.0.113:/home/pi/RMS_data/ArchivedFiles/{latest_directory}/*" ./latest/'
+    rsync_cmd = f'rsync -r -av --delete -v -e ssh "pi@10.10.0.113:/home/pi/RMS_data/ArchivedFiles/{latest_directory}/*.fits" ./latest/'
     subprocess.call(rsync_cmd, shell=True)
     logging.debug(f"rsync_cmd: {rsync_cmd} - done")
 
@@ -233,7 +231,7 @@ if __name__ == "__main__":
     parser.add_argument('-i', '--image_directory', type=str, help='The directory of images to process')
     parser.add_argument('-f', '--fetch_latest_images', action='store_true', help='Fetch images before processing')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
-    parser.add_argument('-n', '--no-update', action='store_true', help='Do not update the images')
+    # parser.add_argument('-n', '--no-update', action='store_true', help='Do not update the images')
     parser.add_argument('-F', '--full-screen', action='store_true', help='Full screen')
 
     args = parser.parse_args()
@@ -258,9 +256,9 @@ if __name__ == "__main__":
         logging.debug("Slideshow mode")
         image_dir = args.image_directory if args.image_directory else 'current'
         application = Application(full_screen=args.full_screen)
+        application.start()
+        application.window.mainloop()
         application.set_image_directory(image_dir)
         logging.debug("Starting application")
-        application.start(args.no_update)
-        application.window.mainloop()
         # except:
         #     logging.error("Unexpected error: %s", sys.exc_info()[0])
