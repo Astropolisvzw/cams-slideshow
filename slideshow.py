@@ -44,6 +44,8 @@ class Application():
 
         # Bind the Escape key to the exit_fullscreen method
         self.window.bind("<Escape>", self.exit_fullscreen)
+        self.window.bind("<Return>", self.exit_fullscreen)  # Enter key
+        self.window.bind("<space>", self.exit_fullscreen)  # Space key
         self.current_slide.pack()
 
     def exit_fullscreen(self, event=None):
