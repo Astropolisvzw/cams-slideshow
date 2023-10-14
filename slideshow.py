@@ -20,14 +20,13 @@ import os
 import glob
 import datetime
 
-
 has_run_today = False
 
 
 class Application():
     image_dir = 'current'
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, full_screen):
         self.window = tk.Tk()
         # tk.Tk.__init__(self, *args, **kwargs)
         self.window.attributes("-topmost", True)
@@ -35,16 +34,49 @@ class Application():
 
         self.window.title("Slideshow")
         self.window.resizable(width=True, height=True)
-        self.window.attributes("-fullscreen", True)
+        self.window.attributes("-fullscreen", full_screen)
         self.current_slide = tk.Label(bg="black")
-        self.current_slide.pack()
         self.duration_ms = 5000
+        # Create a label with text, specifying the font size and color
+        self.text_label = tk.Label(self.window, text="", font=("Arial", 20), fg="white", bg="black", anchor="nw")
+        # Position the label in the top left corner
+        self.text_label.place(x=10, y=10)  # Adjust the x and y values as needed
+
+        # Bind the Escape key to the exit_fullscreen method
+        self.window.bind("<Escape>", self.exit_fullscreen)
+        self.current_slide.pack()
+
+    def exit_fullscreen(self, event=None):
+        # To toggle fullscreen off
+        self.window.attributes("-fullscreen", False)
+        # Or to close the application, uncomment the next line
+        self.window.destroy()
+
+    def slide_filename_to_date(self, filename):
+        """ Converts a filename like 'slide035_20231014_021113_363_0776192.png' to '14 oktober 2023 om 02:11' """
+
+        # Extract the date and time parts
+        date_str, time_str = filename.split('_')[1:3]
+
+        # Parse the date and time parts
+        date_obj = datetime.datetime.strptime(date_str, '%Y%m%d')
+        time_obj = datetime.datetime.strptime(time_str, '%H%M%S')
+
+        # Map month numbers to Dutch month names
+        month_names = {
+            1: 'januari', 2: 'februari', 3: 'maart', 4: 'april',
+            5: 'mei', 6: 'juni', 7: 'juli', 8: 'augustus',
+            9: 'september', 10: 'oktober', 11: 'november', 12: 'december'
+        }
+        month_name = month_names[date_obj.month]
+
+        # Construct the new string
+        return f"{date_obj.day} {month_name} {date_obj.year} om {time_obj.strftime('%H:%M')}"
 
     def resize_image(self, img, max_width, max_height):
         """Resizes an image proportionally to fit within the given width and height."""
         logging.debug(f"resizing image to {max_width}x{max_height}, {type(img)}")
         width, height = img.size
-        logging.debug(f"resizing image to {max_width}x{max_height}")
         aspect_ratio = width / height
         new_width = min(max_width, width)
         new_height = int(new_width / aspect_ratio)
@@ -60,7 +92,6 @@ class Application():
         return new_img
 
     def convert_fits(self, fits_file, number, path):
-        logging.debug(f"converting {fits_file} to {path}/slide{number:03d}.png")
         plt.style.use(astropy_mpl_style)
         # f = '/Users/mike/dev/astropolis/cams-slideshow/data/BE000D_20220713_205043_342065_detected/FF_BE000D_20220713_211249_360_0033024.fits'
 
@@ -70,8 +101,12 @@ class Application():
         plt.imshow(image_data, cmap='gray')
         plt.axis('off')  # Turn off the axis
 
+        # Extract substring after 'BE000D_' and remove '.fits' extension
+        timestring = str(fits_file).split('BE000D_')[1].replace('.fits', '')
+
         # Save the figure without any surrounding whitespace
-        output_filename = f"{path}/slide{number:03d}.png"  # specify the path where you want to save the image
+        output_filename = f"{path}/slide{number:03d}_{timestring}.png"  # specify the path where you want to save the image
+        logging.debug(f"converting {fits_file} to {output_filename}")
         plt.savefig(output_filename, bbox_inches='tight', pad_inches=0, dpi=300)
 
         # Close the figure
@@ -79,6 +114,7 @@ class Application():
 
     def convert_all_fits(self, path):
         fits_files = list(Path(path).glob("*.fits"))
+        fits_files.sort()
         png_files = list(Path(path).glob("slide*.png"))
         if len(fits_files) == len(png_files):
             logging.debug("all fits already converted")
@@ -90,11 +126,13 @@ class Application():
                 logging.error(f"could not convert {fits_file}")
 
     def create_zip(self, image_paths, width, height):
+        max = len(image_paths)
         resized_images = (self.resize_image(Image.open(p), width, height) for p in image_paths)
         logging.debug("resized_images: %s", resized_images)
         photoimages = map(ImageTk.PhotoImage, resized_images)
         paths_as_strings = [x.name for x in image_paths]
-        thezip = zip(paths_as_strings, photoimages)
+        # thezip = zip(current, max, paths_as_strings, photoimages)
+        thezip = [(current, max, path_str, photoimage) for current, (path_str, photoimage) in enumerate(zip(paths_as_strings, photoimages))]
         return thezip
 
     def set_image_directory(self, path):
@@ -118,7 +156,8 @@ class Application():
         self.images = cycle(thezip)
 
     def display_next_slide(self):
-        name, self.next_image = next(self.images)
+        current, max, name, self.next_image = next(self.images)
+        self.text_label.config(text=f"({current+1}/{max}) {self.slide_filename_to_date(name)}")
         self.current_slide.config(image=self.next_image)
         self.current_slide.pack()
         self.window.title(name)
@@ -129,6 +168,7 @@ class Application():
             update = check_time_and_run()
             if update:
                 self.set_image_directory(self.image_dir)
+        logging.debug("next slide")
         self.display_next_slide()
 
 
@@ -194,6 +234,7 @@ if __name__ == "__main__":
     parser.add_argument('-f', '--fetch_latest_images', action='store_true', help='Fetch images before processing')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     parser.add_argument('-n', '--no-update', action='store_true', help='Do not update the images')
+    parser.add_argument('-F', '--full-screen', action='store_true', help='Full screen')
 
     args = parser.parse_args()
     # Get the logger for the 'PIL' library
@@ -213,13 +254,13 @@ if __name__ == "__main__":
         logging.debug("Fetching images")
         fetch_latest_dir()
     else:
-        try:
-            logging.debug("Slideshow mode")
-            image_dir = args.image_directory if args.image_directory else 'current'
-            application = Application()
-            application.set_image_directory(image_dir)
-            logging.debug("Starting application")
-            application.start(args.no_update)
-            application.window.mainloop()
-        except:
-            logging.error("Unexpected error: %s", sys.exc_info()[0])
+        # try:
+        logging.debug("Slideshow mode")
+        image_dir = args.image_directory if args.image_directory else 'current'
+        application = Application(full_screen=args.full_screen)
+        application.set_image_directory(image_dir)
+        logging.debug("Starting application")
+        application.start(args.no_update)
+        application.window.mainloop()
+        # except:
+        #     logging.error("Unexpected error: %s", sys.exc_info()[0])
