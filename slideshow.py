@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 
+from typing import Tuple
 import tkinter as tk
 import matplotlib.pyplot as plt
 from astropy.visualization import astropy_mpl_style
 from astropy.io import fits
-from astropy.utils.data import get_pkg_data_filename
-import tkinter as tk
 from PIL import Image, ImageTk
 from PIL.Image import Resampling
 import subprocess
@@ -14,20 +13,38 @@ import argparse
 from pathlib import Path
 from itertools import cycle
 import logging
-import sys
 import shutil
 import os
 import glob
-import datetime
+import time
+from datetime import datetime
+import json
+from dataclasses import dataclass, asdict, field
 
-has_run_today = False
+
+@dataclass
+class State:
+    last_dir: str = field(default='')
+    last_switch: str = field(default='')
+    image_dir: str = field(default='current')
+
+    def save(self, filename: str):
+        with open(filename, "w") as f:
+            json.dump(asdict(self), f, indent=4)
+
+    @classmethod
+    def load(cls, filename: str):
+        with open(filename, "r") as f:
+            data = json.load(f)
+        return cls(**data)
 
 
 class Application():
-    image_dir = 'current'
+    images = None
 
-    def __init__(self, full_screen):
+    def __init__(self, state: State, full_screen):
         self.window = tk.Tk()
+        self.state = state
         # tk.Tk.__init__(self, *args, **kwargs)
         self.window.attributes("-topmost", True)
         self.window.attributes("-topmost", False)
@@ -61,8 +78,8 @@ class Application():
         date_str, time_str = filename.split('_')[1:3]
 
         # Parse the date and time parts
-        date_obj = datetime.datetime.strptime(date_str, '%Y%m%d')
-        time_obj = datetime.datetime.strptime(time_str, '%H%M%S')
+        date_obj = datetime.strptime(date_str, '%Y%m%d')
+        time_obj = datetime.strptime(time_str, '%H%M%S')
 
         # Map month numbers to Dutch month names
         month_names = {
@@ -117,15 +134,16 @@ class Application():
     def convert_all_fits(self, path):
         fits_files = list(Path(path).glob("*.fits"))
         fits_files.sort()
-        png_files = list(Path(path).glob("slide*.png"))
-        if len(fits_files) == len(png_files):
-            logging.debug("all fits already converted")
-            return
         for number, fits_file in enumerate(fits_files):
             try:
                 self.convert_fits(fits_file, number, path)
             except UnidentifiedImageError:
                 logging.error(f"could not convert {fits_file}")
+
+    def are_fits_converted(self, path):
+        fits_files = list(Path(path).glob("*.fits"))
+        png_files = list(Path(path).glob("slide*.png"))
+        return len(fits_files) == len(png_files)
 
     def create_zip(self, image_paths, width, height):
         max = len(image_paths)
@@ -137,12 +155,7 @@ class Application():
         thezip = [(current, max, path_str, photoimage) for current, (path_str, photoimage) in enumerate(zip(paths_as_strings, photoimages))]
         return thezip
 
-    def set_image_directory(self, path):
-        self.image_dir = path
-        logging.debug("converting all fits in %s", path)
-        self.convert_all_fits(path)
-        logging.debug("converting all fits done")
-
+    def create_image_cycle(self, path):
         image_paths = list(Path(path).glob("slide*.png"))
         image_paths.sort()
         width = self.window.winfo_width()
@@ -158,6 +171,11 @@ class Application():
         self.images = cycle(thezip)
 
     def display_next_slide(self):
+        updated = check_time_and_run(self.state)
+        if updated:
+            self.convert_all_fits(self.state.image_dir)
+        if updated or self.images is None:
+            self.create_image_cycle(self.state.image_dir)
         current, max, name, self.next_image = next(self.images)
         self.text_label.config(text=f"({current+1}/{max}) {self.slide_filename_to_date(name)}")
         self.current_slide.config(image=self.next_image)
@@ -166,66 +184,105 @@ class Application():
         self.window.after(self.duration_ms, self.display_next_slide)
 
     def start(self):
-        update = check_time_and_run()
-        if update:
-            self.set_image_directory(self.image_dir)
         self.display_next_slide()
 
 
-def fetch_latest_dir():
-    # Step 1: SSH into the machine and list the directories in the specified folder
+def check_latest_dir() -> Tuple[str, int]:
+    """ Gets the most recent dir via ssh + number of fits files in it """
+    # SSH into the machine and list the directories in the specified folder
     cmd = "ssh pi@10.10.0.113 'ls RMS_data/ArchivedFiles'"
     result = subprocess.check_output(cmd, shell=True).decode("utf-8")
 
     # Convert the result to a list of directories
     directories = result.splitlines()
 
-    # Step 2: Find the latest directory based on the naming convention
+    # Find the latest directory based on the naming convention
     directories.sort(key=lambda x: (re.search(r'(\d{4})(\d{2})(\d{2})', x).groups() if re.search(r'(\d{4})(\d{2})(\d{2})', x) else (0,0,0)), reverse=True)
     latest_directory = directories[0]
     logging.info(f"latest_directory found: {latest_directory}")
 
-    # Step 3: Prepare directories for rsync_cmd
-    # shutil.rmtree('latest', ignore_errors=True)
+    # find out if there are any fits files
+    cmd = f"ssh pi@10.10.0.113 'ls RMS_data/ArchivedFiles/{latest_directory}/*.fits | wc -l'"
+    result = subprocess.check_output(cmd, shell=True).decode("utf-8")
+    fits = result.splitlines()
+    logging.debug("fits: %s", fits)
+    nr_fits = len(fits)
+    return latest_directory, nr_fits
+
+
+def fetch_latest_dir(latest_dir: str) -> str:
     os.makedirs('latest', exist_ok=True)
 
-    # Step 4: Use rsync to fetch the latest directory
-    rsync_cmd = f'rsync -r -av --delete -v -e ssh "pi@10.10.0.113:/home/pi/RMS_data/ArchivedFiles/{latest_directory}/*.fits" ./latest/'
-    subprocess.call(rsync_cmd, shell=True)
-    logging.debug(f"rsync_cmd: {rsync_cmd} - done")
+    # Use rsync to fetch the latest directory
+    rsync_cmd = f'rsync -r -av --delete -v -e ssh "pi@10.10.0.113:/home/pi/RMS_data/ArchivedFiles/{latest_dir}/*.fits" ./latest/'
 
-    # Step 5: Check the number of *.fits files in the 'latest' directory
-    fits_files_count = len(glob.glob('latest/*.fits'))
-    logging.debug(f"Number of *.fits files: {fits_files_count}")
-
-    if fits_files_count > 0:
-        # If there are more than 0 *.fits files:
-
-        # Step 5: Delete 'current_old' directory if it exists
-        shutil.rmtree('current_old', ignore_errors=True)
-
-        # Step 6: Rename 'current' to 'current_old' if 'current' exists
-        if os.path.exists('current'):
-            os.rename('current', 'current_old')
-
-        # Step 7: Rename 'latest' to 'current'
-        os.rename('latest', 'current')
-        logging.info("Successfully fetched latest images")
-    else:
-        logging.info("No *.fits files found in 'latest' directory")
+    try:
+        subprocess.run(rsync_cmd, check=True, shell=True)
+        logging.debug(f"rsync_cmd: {' '.join(rsync_cmd)} - done")
+    except subprocess.CalledProcessError as e:
+        logging.error(f"rsync failed with error: {e}")
 
 
-def check_time_and_run():
-    global has_run_today
-    now = datetime.datetime.now()
+    # subprocess.call(rsync_cmd, shell=True)
+    # logging.debug(f"rsync_cmd: {rsync_cmd} - done")
+    switch_latest_dir()
 
-    if now.hour >= 9 and not has_run_today:
-        fetch_latest_dir()
-        has_run_today = True
+
+def switch_latest_dir():
+    # Delete 'current_old' directory if it exists
+    shutil.rmtree('current_old', ignore_errors=True)
+
+    # Rename 'current' to 'current_old' if 'current' exists
+    if os.path.exists('current'):
+        os.rename('current', 'current_old')
+
+    # Rename 'latest' to 'current'
+    os.rename('latest', 'current')
+    logging.info("Successfully switched to dir with latest images")
+
+
+def was_modified_today(directory_path: str) -> bool:
+    # Get the last modification time in seconds since the epoch
+    mod_time_since_epoch = os.path.getmtime(directory_path)
+
+    # Convert to a datetime object
+    mod_datetime = datetime.fromtimestamp(mod_time_since_epoch)
+
+    # Get the current time and date
+    current_datetime = datetime.now()
+
+    # Compare the date parts
+    return mod_datetime.date() == current_datetime.date()
+
+
+def touch_directory(directory_path: str):
+    current_time = time.time()
+    os.utime(directory_path, (current_time, current_time))
+
+
+def check_time_and_run(state) -> bool:
+    """ Checks if it's time to run the script, returns True if we ran it """
+    now = datetime.now()
+
+    if now.hour >= 9 and not was_modified_today(state.image_dir):
+        latest_dir, nr_fits = check_latest_dir()
+        if nr_fits > 0:
+            fetch_latest_dir(latest_dir)
+            state.last_switch = now.isoformat()
+        state.last_dir = latest_dir
+        touch_directory(state.image_dir)  # don't run again today
+        state.save('latest_state.json')
+        logging.info(f"Wrote new last_dir: {state=}")
         return True
-    elif now.hour < 9:
-        has_run_today = False
     return False
+
+
+def cams_dir_to_date(s) -> datetime:
+    try:
+        date_str = s.split('_')[1]
+        return datetime.strptime(date_str, '%Y%m%d')
+    except (IndexError, ValueError):
+        return None
 
 
 if __name__ == "__main__":
@@ -237,11 +294,18 @@ if __name__ == "__main__":
     parser.add_argument('-F', '--full-screen', action='store_true', help='Full screen')
 
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO)
     # Get the logger for the 'PIL' library
     pil_logger = logging.getLogger('PIL')
 
     # Set the logging level to INFO to suppress DEBUG messages
     pil_logger.setLevel(logging.INFO)
+
+    state = State()
+    if os.path.exists('latest_state.json'):
+        state = State.load('latest_state.json')
+
+    logging.info(f"Starting with {state=}")
 
     if args.image_directory and not Path(args.image_directory).is_dir():
         logging.debug(f"Error: {args.image_directory} is not a valid directory.")
@@ -256,11 +320,10 @@ if __name__ == "__main__":
     else:
         # try:
         logging.debug("Slideshow mode")
-        image_dir = args.image_directory if args.image_directory else 'current'
-        application = Application(full_screen=args.full_screen)
+        state.image_dir = args.image_directory if args.image_directory else state.image_dir
+        application = Application(full_screen=args.full_screen, state=state)
         application.start()
         application.window.mainloop()
-        application.set_image_directory(image_dir)
         logging.debug("Starting application")
         # except:
         #     logging.error("Unexpected error: %s", sys.exc_info()[0])
