@@ -52,7 +52,7 @@ class Application():
         self.window.title("Slideshow")
         self.window.resizable(width=True, height=True)
         self.window.attributes("-fullscreen", full_screen)
-        self.current_slide = tk.Label(bg="black")
+        self.current_slide = tk.Label(bg="black", highlightbackground='black', highlightcolor='black', highlightthickness=1)
         self.duration_ms = 5000
         # Create a label with text, specifying the font size and color
         self.text_label = tk.Label(self.window, text="", font=("Arial", 20), fg="white", bg="black", anchor="nw")
@@ -158,24 +158,20 @@ class Application():
     def create_image_cycle(self, path):
         image_paths = list(Path(path).glob("slide*.png"))
         image_paths.sort()
-        width = self.window.winfo_width()
-        height = self.window.winfo_height()
-        # logging.debug('the list:', list(image_paths), type(image_paths))
-        # logging.debug(list(map(lambda p: p, image_paths)))
+        width = self.window.winfo_screenwidth()
+        height = self.window.winfo_screenheight()
         thezip = self.create_zip(image_paths, width, height)
-        # thezip = zip(map(lambda p: p.name, image_paths),
-        #              map(ImageTk.PhotoImage, map(Image.open,
-        #                                          image_paths)))
-        # logging.debug('zip:', list(thezip))
-        # logging.debug("length of thezip is", len(list(thezip)))
         self.images = cycle(thezip)
 
     def display_next_slide(self):
         updated = check_time_and_run(self.state)
         if updated:
+            logging.debug("New fits were downloaded, converting them...")
             self.convert_all_fits(self.state.image_dir)
         if updated or self.images is None:
+            logging.debug("Creating new image cycle...")
             self.create_image_cycle(self.state.image_dir)
+        logging.debug("Displaying next slide...")
         current, max, name, self.next_image = next(self.images)
         self.text_label.config(text=f"({current+1}/{max}) {self.slide_filename_to_date(name)}")
         self.current_slide.config(image=self.next_image)
@@ -184,6 +180,7 @@ class Application():
         self.window.after(self.duration_ms, self.display_next_slide)
 
     def start(self):
+        logging.debug("Starting slideshow")
         self.display_next_slide()
 
 
@@ -214,7 +211,8 @@ def fetch_latest_dir(latest_dir: str) -> str:
     os.makedirs('latest', exist_ok=True)
 
     # Use rsync to fetch the latest directory
-    rsync_cmd = f'rsync -r -av --delete -v -e ssh "pi@10.10.0.113:/home/pi/RMS_data/ArchivedFiles/{latest_dir}/*.fits" ./latest/'
+    # rsync_cmd = f'rsync -r -av --delete -v -e ssh "pi@10.10.0.113:/home/pi/RMS_data/ArchivedFiles/{latest_dir}/*.fits" ./latest/'
+    rsync_cmd = 'rsync -r -av --delete -v -e ./fitstest/*.fits ./latest/'
 
     try:
         subprocess.run(rsync_cmd, check=True, shell=True)
@@ -255,9 +253,9 @@ def was_modified_today(directory_path: str) -> bool:
     return mod_datetime.date() == current_datetime.date()
 
 
-def touch_directory(directory_path: str):
-    current_time = time.time()
-    os.utime(directory_path, (current_time, current_time))
+def touch_directory(directory_path: str, offset_sec=0):
+    dir_time = time.time() - offset_sec
+    os.utime(directory_path, (dir_time, dir_time))
 
 
 def check_time_and_run(state) -> bool:
@@ -277,24 +275,19 @@ def check_time_and_run(state) -> bool:
     return False
 
 
-def cams_dir_to_date(s) -> datetime:
-    try:
-        date_str = s.split('_')[1]
-        return datetime.strptime(date_str, '%Y%m%d')
-    except (IndexError, ValueError):
-        return None
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Process some images.')
     parser.add_argument('-i', '--image_directory', type=str, help='The directory of images to process')
-    parser.add_argument('-f', '--fetch_latest_images', action='store_true', help='Fetch images before processing')
+    parser.add_argument('-f', '--fetch_latest_images', action='store_true', help='Fetch latest images. TEST ONLY')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     # parser.add_argument('-n', '--no-update', action='store_true', help='Do not update the images')
     parser.add_argument('-F', '--full-screen', action='store_true', help='Full screen')
 
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+
     # Get the logger for the 'PIL' library
     pil_logger = logging.getLogger('PIL')
 
@@ -311,16 +304,19 @@ if __name__ == "__main__":
         logging.debug(f"Error: {args.image_directory} is not a valid directory.")
         exit(1)
 
-    if args.debug:
-        logging.basicConfig(level=logging.DEBUG)
-
     if args.fetch_latest_images:
-        logging.debug("Fetching images")
-        fetch_latest_dir()
+        logging.info("Fetching images")
+        latest_dir, nr_fits = check_latest_dir()
+        logging.info(f"latest_dir: {latest_dir}, {nr_fits=}")
+        if nr_fits > 0:
+            fetch_latest_dir(latest_dir)
+            logging.info("Successfully fetched latest images")
     else:
         # try:
         logging.debug("Slideshow mode")
         state.image_dir = args.image_directory if args.image_directory else state.image_dir
+        os.makedirs(state.image_dir, exist_ok=True)
+        touch_directory(state.image_dir, offset_sec=60*60*24)  # pretend we ran it yesterday
         application = Application(full_screen=args.full_screen, state=state)
         application.start()
         application.window.mainloop()
