@@ -18,6 +18,7 @@ import os
 import glob
 import time
 from datetime import datetime
+import pytz
 import json
 from dataclasses import dataclass, asdict, field
 
@@ -57,7 +58,7 @@ class Application():
         # Create a label with text, specifying the font size and color
         self.text_label = tk.Label(self.window, text="", font=("Arial", 20), fg="white", bg="black", anchor="nw")
         # Position the label in the top left corner
-        self.text_label.place(x=10, y=10)  # Adjust the x and y values as needed
+        self.text_label.place(x=10, y=-10)  # Adjust the x and y values as needed
 
         # Bind the Escape key to the exit_fullscreen method
         self.window.bind("<Escape>", self.exit_fullscreen)
@@ -72,14 +73,19 @@ class Application():
         self.window.destroy()
 
     def slide_filename_to_date(self, filename):
-        """ Converts a filename like 'slide035_20231014_021113_363_0776192.png' to '14 oktober 2023 om 02:11' """
-
         # Extract the date and time parts
         date_str, time_str = filename.split('_')[1:3]
 
         # Parse the date and time parts
         date_obj = datetime.strptime(date_str, '%Y%m%d')
-        time_obj = datetime.strptime(time_str, '%H%M%S')
+        time_obj = datetime.strptime(time_str, '%H%M%S').time()
+
+        # Combine date and time into a single datetime object
+        combined_datetime = datetime.combine(date_obj, time_obj).replace(tzinfo=pytz.UTC)
+
+        # Convert to Europe/Brussels time
+        brussels_tz = pytz.timezone('Europe/Brussels')
+        combined_datetime = combined_datetime.astimezone(brussels_tz)
 
         # Map month numbers to Dutch month names
         month_names = {
@@ -87,19 +93,17 @@ class Application():
             5: 'mei', 6: 'juni', 7: 'juli', 8: 'augustus',
             9: 'september', 10: 'oktober', 11: 'november', 12: 'december'
         }
-        month_name = month_names[date_obj.month]
+        month_name = month_names[combined_datetime.month]
 
         # Construct the new string
-        return f"{date_obj.day} {month_name} {date_obj.year} om {time_obj.strftime('%H:%M')}"
+        return f"{combined_datetime.day} {month_name} {combined_datetime.year} @ {combined_datetime.strftime('%H:%M')}"
 
     def resize_image(self, img, max_width, max_height):
         """Resizes an image proportionally to fit within the given width and height."""
-        logging.debug(f"resizing image to {max_width}x{max_height}, {type(img)}")
         width, height = img.size
         aspect_ratio = width / height
         new_width = min(max_width, width)
         new_height = int(new_width / aspect_ratio)
-        logging.debug(f"new size: {new_width}x{new_height}")
 
         if new_height > max_height:
             new_height = min(max_height, height)
@@ -140,15 +144,15 @@ class Application():
             except Exception as e:
                 logging.error(f"could not convert {fits_file}, {e}")
 
-    def are_fits_converted(self, path):
-        fits_files = list(Path(path).glob("*.fits"))
-        png_files = list(Path(path).glob("slide*.png"))
-        return len(fits_files) == len(png_files)
+    # def are_fits_converted(self, path):
+    #     fits_files = list(Path(path).glob("*.fits"))
+    #     png_files = list(Path(path).glob("slide*.png"))
+    #     return len(fits_files) == len(png_files)
 
     def create_zip(self, image_paths, width, height):
         max = len(image_paths)
+        logging.debug(f"Resizing images to {width}x{height}")
         resized_images = (self.resize_image(Image.open(p), width, height) for p in image_paths)
-        logging.debug("resized_images: %s", resized_images)
         photoimages = map(ImageTk.PhotoImage, resized_images)
         paths_as_strings = [x.name for x in image_paths]
         thezip = [(current, max, path_str, photoimage) for current, (path_str, photoimage) in enumerate(zip(paths_as_strings, photoimages))]
@@ -164,8 +168,8 @@ class Application():
 
     def get_correct_images(self, path):
         updated = check_time_and_run(self.state)
-        #updated = True if self.images is None else False
-        logging.debug(f"{updated=}")
+        # updated = True if self.images is None else False
+        # logging.debug(f"{updated=}")
         if updated:
             logging.debug("New fits were downloaded, converting them...")
             self.convert_all_fits(self.state.image_dir)
@@ -175,7 +179,6 @@ class Application():
         return self.images
 
     def display_next_slide(self):
-        logging.debug("display_next_slide")
         try:
             self.images = self.get_correct_images(self.state.image_dir)
         except Exception as e:
@@ -187,7 +190,6 @@ class Application():
         self.current_slide.pack()
         self.window.title(name)
         self.window.after(self.duration_ms, self.display_next_slide)
-        logging.debug("after after")
 
     def start(self):
         logging.debug("Starting slideshow")
@@ -260,7 +262,9 @@ def was_modified_today(directory_path: str) -> bool:
     current_datetime = datetime.now()
 
     # Compare the date parts
-    return mod_datetime.date() == current_datetime.date()
+    was_modified = mod_datetime.date() == current_datetime.date()
+    #logging.debug(f"{directory_path} was modified today: {was_modified}")
+    return was_modified
 
 
 def touch_directory(directory_path: str, offset_sec=0):
@@ -325,8 +329,9 @@ if __name__ == "__main__":
         # try:
         logging.debug("Slideshow mode")
         state.image_dir = args.image_directory if args.image_directory else state.image_dir
-        os.makedirs(state.image_dir, exist_ok=True)
-        touch_directory(state.image_dir, offset_sec=60*60*24)  # pretend we ran it yesterday
+        if not os.path.exists(state.image_dir):
+            os.makedirs(state.image_dir, exist_ok=True)
+            touch_directory(state.image_dir, offset_sec=60*60*24)  # pretend we ran it yesterday
         application = Application(full_screen=args.full_screen, state=state)
         application.start()
         application.window.mainloop()

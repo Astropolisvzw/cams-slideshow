@@ -12,6 +12,7 @@ pillow = "^9.4.0"
 everything-tkinter = "^0.2"
 astropy = "^5.2.1"
 matplotlib = "^3.7.2"
+pytz = "^2023.3.post1"
 
 
 [tool.poetry.group.dev.dependencies]
