@@ -137,8 +137,8 @@ class Application():
         for number, fits_file in enumerate(fits_files):
             try:
                 self.convert_fits(fits_file, number, path)
-            except UnidentifiedImageError:
-                logging.error(f"could not convert {fits_file}")
+            except Exception as e:
+                logging.error(f"could not convert {fits_file}, {e}")
 
     def are_fits_converted(self, path):
         fits_files = list(Path(path).glob("*.fits"))
@@ -151,7 +151,6 @@ class Application():
         logging.debug("resized_images: %s", resized_images)
         photoimages = map(ImageTk.PhotoImage, resized_images)
         paths_as_strings = [x.name for x in image_paths]
-        # thezip = zip(current, max, paths_as_strings, photoimages)
         thezip = [(current, max, path_str, photoimage) for current, (path_str, photoimage) in enumerate(zip(paths_as_strings, photoimages))]
         return thezip
 
@@ -161,23 +160,34 @@ class Application():
         width = self.window.winfo_screenwidth()
         height = self.window.winfo_screenheight()
         thezip = self.create_zip(image_paths, width, height)
-        self.images = cycle(thezip)
+        return cycle(thezip)
 
-    def display_next_slide(self):
+    def get_correct_images(self, path):
         updated = check_time_and_run(self.state)
+        #updated = True if self.images is None else False
+        logging.debug(f"{updated=}")
         if updated:
             logging.debug("New fits were downloaded, converting them...")
             self.convert_all_fits(self.state.image_dir)
         if updated or self.images is None:
             logging.debug("Creating new image cycle...")
-            self.create_image_cycle(self.state.image_dir)
-        logging.debug("Displaying next slide...")
+            self.images = self.create_image_cycle(self.state.image_dir)
+        return self.images
+
+    def display_next_slide(self):
+        logging.debug("display_next_slide")
+        try:
+            self.images = self.get_correct_images(self.state.image_dir)
+        except Exception as e:
+            logging.error(f"Could not get images: {e}")
+            return
         current, max, name, self.next_image = next(self.images)
         self.text_label.config(text=f"({current+1}/{max}) {self.slide_filename_to_date(name)}")
         self.current_slide.config(image=self.next_image)
         self.current_slide.pack()
         self.window.title(name)
         self.window.after(self.duration_ms, self.display_next_slide)
+        logging.debug("after after")
 
     def start(self):
         logging.debug("Starting slideshow")
@@ -211,8 +221,8 @@ def fetch_latest_dir(latest_dir: str) -> str:
     os.makedirs('latest', exist_ok=True)
 
     # Use rsync to fetch the latest directory
-    # rsync_cmd = f'rsync -r -av --delete -v -e ssh "pi@10.10.0.113:/home/pi/RMS_data/ArchivedFiles/{latest_dir}/*.fits" ./latest/'
-    rsync_cmd = 'rsync -r -av --delete -v -e ./fitstest/*.fits ./latest/'
+    rsync_cmd = f'rsync -r -av --delete -v -e ssh "pi@10.10.0.113:/home/pi/RMS_data/ArchivedFiles/{latest_dir}/*.fits" ./latest/'
+    #rsync_cmd = 'rsync -r -av --delete -v -e ./fitstest/*.fits ./latest/'
 
     try:
         subprocess.run(rsync_cmd, check=True, shell=True)
