@@ -56,9 +56,9 @@ class Application():
         self.current_slide = tk.Label(bg="black", highlightbackground='black', highlightcolor='black', highlightthickness=1)
         self.duration_ms = 5000
         # Create a label with text, specifying the font size and color
-        self.text_label = tk.Label(self.window, text="", font=("Arial", 20), fg="white", bg="black", anchor="nw")
+        self.text_label = tk.Label(self.window, text="", font=("Arial", 24), fg="white", bg="black", anchor="nw")
         # Position the label in the top left corner
-        self.text_label.place(x=10, y=-10)  # Adjust the x and y values as needed
+        self.text_label.place(x=10, y=10)  # Adjust the x and y values as needed
 
         # Bind the Escape key to the exit_fullscreen method
         self.window.bind("<Escape>", self.exit_fullscreen)
