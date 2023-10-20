@@ -15,13 +15,13 @@ from itertools import cycle
 import logging
 import shutil
 import os
-import glob
 import time
 from datetime import datetime
 import pytz
 import json
 from dataclasses import dataclass, asdict, field
 
+RMS_HOST = 'pi@10.10.0.113'
 
 @dataclass
 class State:
@@ -168,8 +168,6 @@ class Application():
 
     def get_correct_images(self, path):
         updated = check_time_and_run(self.state)
-        # updated = True if self.images is None else False
-        # logging.debug(f"{updated=}")
         if updated:
             logging.debug("New fits were downloaded, converting them...")
             self.convert_all_fits(self.state.image_dir)
@@ -199,7 +197,7 @@ class Application():
 def check_latest_dir() -> Tuple[str, int]:
     """ Gets the most recent dir via ssh + number of fits files in it """
     # SSH into the machine and list the directories in the specified folder
-    cmd = "ssh pi@10.10.0.113 'ls RMS_data/ArchivedFiles'"
+    cmd = f"ssh {RMS_HOST} 'ls RMS_data/ArchivedFiles'"
     result = subprocess.check_output(cmd, shell=True).decode("utf-8")
 
     # Convert the result to a list of directories
@@ -211,7 +209,7 @@ def check_latest_dir() -> Tuple[str, int]:
     logging.info(f"latest_directory found: {latest_directory}")
 
     # find out if there are any fits files
-    cmd = f"ssh pi@10.10.0.113 'ls RMS_data/ArchivedFiles/{latest_directory}/*.fits | wc -l'"
+    cmd = f"ssh {RMS_HOST} 'ls RMS_data/ArchivedFiles/{latest_directory}/*.fits | wc -l'"
     result = subprocess.check_output(cmd, shell=True).decode("utf-8")
     fits = result.splitlines()
     logging.debug("fits: %s", fits)
@@ -223,7 +221,7 @@ def fetch_latest_dir(latest_dir: str) -> str:
     os.makedirs('latest', exist_ok=True)
 
     # Use rsync to fetch the latest directory
-    rsync_cmd = f'rsync -r -av --delete -v -e ssh "pi@10.10.0.113:/home/pi/RMS_data/ArchivedFiles/{latest_dir}/*.fits" ./latest/'
+    rsync_cmd = f'rsync -r -av --delete -v -e ssh "{RMS_HOST}:/home/pi/RMS_data/ArchivedFiles/{latest_dir}/*.fits" ./latest/'
     #rsync_cmd = 'rsync -r -av --delete -v -e ./fitstest/*.fits ./latest/'
 
     try:
@@ -232,9 +230,6 @@ def fetch_latest_dir(latest_dir: str) -> str:
     except subprocess.CalledProcessError as e:
         logging.error(f"rsync failed with error: {e}")
 
-
-    # subprocess.call(rsync_cmd, shell=True)
-    # logging.debug(f"rsync_cmd: {rsync_cmd} - done")
     switch_latest_dir()
 
 
@@ -251,6 +246,7 @@ def switch_latest_dir():
     logging.info("Successfully switched to dir with latest images")
 
 
+# DEPRECATED
 def was_modified_today(directory_path: str) -> bool:
     # Get the last modification time in seconds since the epoch
     mod_time_since_epoch = os.path.getmtime(directory_path)
@@ -267,6 +263,23 @@ def was_modified_today(directory_path: str) -> bool:
     return was_modified
 
 
+def is_time_for_updating(last_switch: str) -> bool:
+    """ Is it time to update the images? """
+
+    if last_switch == '':
+        return True
+
+    # Get the last modification time in seconds since the epoch
+    last_switch_date = datetime.fromisoformat(last_switch)
+
+    # Get the current time and date
+    current_datetime = datetime.now()
+
+    # are we still in the same day?
+    is_same_day = last_switch_date.date() == current_datetime.date()
+    return not is_same_day
+
+
 def touch_directory(directory_path: str, offset_sec=0):
     dir_time = time.time() - offset_sec
     os.utime(directory_path, (dir_time, dir_time))
@@ -276,16 +289,19 @@ def check_time_and_run(state) -> bool:
     """ Checks if it's time to run the script, returns True if we ran it """
     now = datetime.now()
 
-    if now.hour >= 9 and not was_modified_today(state.image_dir):
-        latest_dir, nr_fits = check_latest_dir()
-        if nr_fits > 0:
-            fetch_latest_dir(latest_dir)
-            state.last_switch = now.isoformat()
-        state.last_dir = latest_dir
-        touch_directory(state.image_dir)  # don't run again today
-        state.save('latest_state.json')
-        logging.info(f"Wrote new last_dir: {state=}")
-        return True
+    if now.hour >= 9 and is_time_for_updating(state.last_switch):
+        try:
+            latest_dir, nr_fits = check_latest_dir()
+            if nr_fits > 4:
+                fetch_latest_dir(latest_dir)
+                state.last_switch = now.isoformat()
+            state.last_dir = latest_dir
+            touch_directory(state.image_dir)  # don't run again today
+            state.save('latest_state.json')
+            logging.info(f"Wrote new last_dir: {state=}")
+            return True
+        except Exception as e:
+            logging.error(f"Could not check latest dir: {e}")
     return False
 
 
