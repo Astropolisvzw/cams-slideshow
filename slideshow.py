@@ -211,7 +211,6 @@ def check_latest_dir() -> Tuple[str, int]:
     # find out if there are any fits files
     cmd = f"ssh {RMS_HOST} 'ls RMS_data/ArchivedFiles/{latest_directory}/*.fits | wc -l'"
     result = subprocess.check_output(cmd, shell=True).decode("utf-8")
-    logging.debug(f"result: {result}")
     nr_fits = int(result)
     return latest_directory, nr_fits
 
