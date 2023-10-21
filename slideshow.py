@@ -293,10 +293,11 @@ def check_time_and_run(state) -> bool:
         try:
             latest_dir, nr_fits = check_latest_dir()
             if nr_fits > 4:
+                logging.debug(f"There are {nr_fits} fits files in the latest dir, fetching them")
                 fetch_latest_dir(latest_dir)
                 state.last_switch = now.isoformat()
             state.last_dir = latest_dir
-            touch_directory(state.image_dir)  # don't run again today
+            # touch_directory(state.image_dir)  # don't run again today
             state.save('latest_state.json')
             logging.info(f"Wrote new last_dir: {state=}")
             return True
