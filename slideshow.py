@@ -26,7 +26,8 @@ RMS_HOST = 'pi@10.10.0.113'
 @dataclass
 class State:
     last_dir: str = field(default='')
-    last_switch: str = field(default='')
+    last_switch: str = field(default='') # last time we switched to a new dir
+    last_check: str = field(default='') # last time we checked for new images
     image_dir: str = field(default='current')
 
     def save(self, filename: str):
@@ -261,20 +262,20 @@ def was_modified_today(directory_path: str) -> bool:
     return was_modified
 
 
-def is_time_for_updating(last_switch: str) -> bool:
+def is_time_for_updating(last_check: str) -> bool:
     """ Is it time to update the images? """
 
-    if last_switch == '':
+    if last_check == '':
         return True
 
     # Get the last modification time in seconds since the epoch
-    last_switch_date = datetime.fromisoformat(last_switch)
+    last_check_date = datetime.fromisoformat(last_check)
 
     # Get the current time and date
     current_datetime = datetime.now()
 
     # are we still in the same day?
-    is_same_day = last_switch_date.date() == current_datetime.date()
+    is_same_day = last_check_date.date() == current_datetime.date()
     return not is_same_day
 
 
@@ -287,15 +288,17 @@ def check_time_and_run(state) -> bool:
     """ Checks if it's time to run the script, returns True if we ran it """
     now = datetime.now()
 
-    if now.hour >= 9 and is_time_for_updating(state.last_switch):
+    if now.hour >= 9 and is_time_for_updating(state.last_check):
         try:
             latest_dir, nr_fits = check_latest_dir()
-            if nr_fits > 4:
-                logging.debug(f"There are {nr_fits} fits files in the latest dir, fetching them")
+            state.last_check = now.isoformat()
+            if latest_dir != state.last_dir and nr_fits > 4:
+                logging.debug(f"Copying images: {nr_fits} fits files in {latest dir=}")
                 fetch_latest_dir(latest_dir)
-                state.last_switch = now.isoformat()
+                state.last_switch = state.last_check
+            else:
+                logging.debug(f"Not Copying images: {nr_fits} fits files in {latest_dir}, last_dir was {last_dir}")
             state.last_dir = latest_dir
-            # touch_directory(state.image_dir)  # don't run again today
             state.save('latest_state.json')
             logging.info(f"Wrote new last_dir: {state=}")
             return True
