@@ -293,7 +293,7 @@ def check_time_and_run(state) -> bool:
             latest_dir, nr_fits = check_latest_dir()
             state.last_check = now.isoformat()
             if latest_dir != state.last_dir and nr_fits > 4:
-                logging.debug(f"Copying images: {nr_fits} fits files in {latest dir=}")
+                logging.debug(f"Copying images: {nr_fits} fits files in {latest_dir=}")
                 fetch_latest_dir(latest_dir)
                 state.last_switch = state.last_check
             else:
