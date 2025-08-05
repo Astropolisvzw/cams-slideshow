@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(poetry --help)",
+      "Bash(poetry run:*)",
+      "Bash(uv sync:*)",
+      "Bash(uv run:*)",
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "Bash(timeout 30 uv run:*)"
+    ],
+    "deny": []
+  }
+}
