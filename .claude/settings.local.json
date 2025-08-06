@@ -7,7 +7,10 @@
       "Bash(uv run:*)",
       "Bash(ls:*)",
       "Bash(find:*)",
-      "Bash(timeout 30 uv run:*)"
+      "Bash(timeout 30 uv run:*)",
+      "Bash(ldconfig:*)",
+      "Bash(echo $NIX_PATH)",
+      "Bash(export:*)"
     ],
     "deny": []
   }

@@ -25,6 +25,17 @@ from tqdm import tqdm
 RMS_HOST = 'pi@10.10.0.171'
 MIN_FITS_THRESHOLD = 5  # Minimum average FITS files across stations for a "good night"
 
+
+def is_server_available() -> bool:
+    """ Check if the RMS server is reachable """
+    try:
+        # Simple ping-like check with timeout
+        cmd = f"timeout 10 ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no {RMS_HOST} 'echo server_available'"
+        result = subprocess.check_output(cmd, shell=True, timeout=15, stderr=subprocess.DEVNULL).decode("utf-8").strip()
+        return result == "server_available"
+    except Exception:
+        return False
+
 @dataclass
 class State:
     last_dirs: dict = field(default_factory=dict) # last dir per station: {'station-1': 'dir1', 'station-2': 'dir2'}
@@ -141,8 +152,9 @@ class Application():
             new_width = int(new_height * aspect_ratio)
 
         resized_img = img.resize((new_width, new_height), Resampling.BICUBIC)
-        new_img = Image.new("RGB", (width, height))
-        new_img.paste(resized_img, ((width - new_width) // 2, (height - new_height) // 2))
+        # Create new image with screen dimensions (not original image dimensions)
+        new_img = Image.new("RGB", (max_width, max_height))
+        new_img.paste(resized_img, ((max_width - new_width) // 2, (max_height - new_height) // 2))
         return new_img
 
     def convert_fits(self, fits_file, number, path):
@@ -263,17 +275,29 @@ class Application():
         self.display_next_slide()
 
 
-def get_all_stations() -> list:
+def get_all_stations(state: State = None, server_available: bool = True) -> list:
     """ Dynamically discover all available stations """
+    if not server_available:
+        # Fallback to last known active stations from state
+        if state and state.active_stations:
+            logging.info(f"Server unavailable - using last known active stations: {state.active_stations}")
+            return state.active_stations
+        logging.warning("Server unavailable and no cached stations - using fallback")
+        return ['BE000D']  # ultimate fallback
+    
     try:
         cmd = f"ssh {RMS_HOST} 'ls -d RMS_data/BE* 2>/dev/null | xargs -n1 basename 2>/dev/null || true'"
-        result = subprocess.check_output(cmd, shell=True).decode("utf-8")
+        result = subprocess.check_output(cmd, shell=True, timeout=30).decode("utf-8")
         stations = [s.strip() for s in result.splitlines() if s.strip() and s.startswith('BE')]
         logging.info(f"Found stations: {stations}")
         return stations
     except Exception as e:
         logging.error(f"Could not discover stations: {e}")
-        return ['BE000D']  # fallback to default
+        # Fallback to last known active stations from state
+        if state and state.active_stations:
+            logging.info(f"Using last known active stations: {state.active_stations}")
+            return state.active_stations
+        return ['BE000D']  # ultimate fallback
 
 
 def is_good_night(station_fits_counts: dict) -> bool:
@@ -293,20 +317,20 @@ def is_good_night(station_fits_counts: dict) -> bool:
     return average_fits >= MIN_FITS_THRESHOLD
 
 
-def get_station_dirs_for_date(date_pattern: str) -> dict:
+def get_station_dirs_for_date(date_pattern: str, state: State = None) -> dict:
     """
     Get FITS counts for all stations for a specific date pattern.
     Args: date_pattern: e.g., "20250804" or "*20250804*"
     Returns: dict of {station: {'directory': dir_name, 'fits_count': count}}
     """
-    stations = get_all_stations()
+    stations = get_all_stations(state)
     station_dirs = {}
     
     for station in stations:
         try:
             # List directories matching the date pattern (format: BE####_YYYYMMDD_HHMMSS_######)
-            cmd = f"ssh {RMS_HOST} 'ls -d RMS_data/{station}/ArchivedFiles/{station}_{date_pattern}_* 2>/dev/null | head -1'"
-            result = subprocess.check_output(cmd, shell=True).decode("utf-8").strip()
+            cmd = f"timeout 30 ssh -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 {RMS_HOST} 'ls -d RMS_data/{station}/ArchivedFiles/{station}_{date_pattern}_* 2>/dev/null | head -1'"
+            result = subprocess.check_output(cmd, shell=True, timeout=45).decode("utf-8").strip()
             
             if not result:
                 logging.debug(f"No directory found for {station} on {date_pattern}")
@@ -315,8 +339,8 @@ def get_station_dirs_for_date(date_pattern: str) -> dict:
             directory = result.split('/')[-1]  # Get just the directory name
             
             # Count FITS files in this directory
-            cmd = f"ssh {RMS_HOST} 'ls RMS_data/{station}/ArchivedFiles/{directory}/*.fits 2>/dev/null | wc -l'"
-            result = subprocess.check_output(cmd, shell=True).decode("utf-8")
+            cmd = f"timeout 30 ssh -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 {RMS_HOST} 'ls RMS_data/{station}/ArchivedFiles/{directory}/*.fits 2>/dev/null | wc -l'"
+            result = subprocess.check_output(cmd, shell=True, timeout=45).decode("utf-8")
             nr_fits = int(result.strip())
             
             if nr_fits >= 0:  # Include all stations, even with 0 files
@@ -326,6 +350,9 @@ def get_station_dirs_for_date(date_pattern: str) -> dict:
                 }
                 logging.debug(f"Station {station}: {directory} has {nr_fits} fits files")
                 
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
+            logging.warning(f"Could not check station {station} for date {date_pattern} (timeout/connection failed): {e}")
+            continue
         except Exception as e:
             logging.warning(f"Could not check station {station} for date {date_pattern}: {e}")
             continue
@@ -333,7 +360,7 @@ def get_station_dirs_for_date(date_pattern: str) -> dict:
     return station_dirs
 
 
-def find_last_good_night(last_checked_date: str = None) -> dict:
+def find_last_good_night(last_checked_date: str = None, state: State = None) -> dict:
     """
     Find the most recent night where the average FITS count across all stations
     meets the MIN_FITS_THRESHOLD. Goes back in time until a good night is found.
@@ -368,7 +395,7 @@ def find_last_good_night(last_checked_date: str = None) -> dict:
         
         logging.info(f"Checking night {date_pattern} ({days_back} days ago)")
         
-        station_dirs = get_station_dirs_for_date(date_pattern)
+        station_dirs = get_station_dirs_for_date(date_pattern, state)
         if not station_dirs:
             logging.debug(f"No data found for {date_pattern}")
             continue
@@ -390,16 +417,21 @@ def find_last_good_night(last_checked_date: str = None) -> dict:
     return {}
 
 
-def get_latest_dirs_all_stations() -> dict:
+def get_latest_dirs_all_stations(state: State = None, server_available: bool = True) -> dict:
     """ Gets the most recent dir from each station with fits files """
-    stations = get_all_stations()
+    stations = get_all_stations(state, server_available)
     station_dirs = {}
+
+    if not server_available:
+        # Return empty dict when server unavailable - caller will handle fallback
+        logging.info("Server unavailable - cannot fetch latest directories")
+        return station_dirs
 
     for station in stations:
         try:
             # SSH into the machine and list the directories in the station folder
-            cmd = f"ssh {RMS_HOST} 'ls RMS_data/{station}/ArchivedFiles 2>/dev/null || true'"
-            result = subprocess.check_output(cmd, shell=True).decode("utf-8")
+            cmd = f"timeout 30 ssh -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 {RMS_HOST} 'ls RMS_data/{station}/ArchivedFiles 2>/dev/null || true'"
+            result = subprocess.check_output(cmd, shell=True, timeout=45).decode("utf-8")
 
             directories = [d.strip() for d in result.splitlines() if d.strip()]
             if not directories:
@@ -411,8 +443,8 @@ def get_latest_dirs_all_stations() -> dict:
             latest_directory = directories[0]
 
             # Count fits files in this directory
-            cmd = f"ssh {RMS_HOST} 'ls RMS_data/{station}/ArchivedFiles/{latest_directory}/*.fits 2>/dev/null | wc -l'"
-            result = subprocess.check_output(cmd, shell=True).decode("utf-8")
+            cmd = f"timeout 30 ssh -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 {RMS_HOST} 'ls RMS_data/{station}/ArchivedFiles/{latest_directory}/*.fits 2>/dev/null | wc -l'"
+            result = subprocess.check_output(cmd, shell=True, timeout=45).decode("utf-8")
             nr_fits = int(result.strip())
 
             if nr_fits > 0:  # Only include stations with images
@@ -424,6 +456,9 @@ def get_latest_dirs_all_stations() -> dict:
             else:
                 logging.debug(f"Station {station}: {latest_directory} has no fits files")
 
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
+            logging.warning(f"Could not check station {station} (timeout/connection failed): {e}")
+            continue
         except Exception as e:
             logging.warning(f"Could not check station {station}: {e}")
             continue
@@ -536,14 +571,23 @@ def check_time_and_run(state) -> bool:
     now = datetime.now()
 
     if now.hour >= 9 and is_time_for_updating(state.last_check):
+        # First check if server is available
+        server_available = is_server_available()
+        
+        if not server_available:
+            logging.warning("RMS server is not available - continuing with existing images")
+            state.last_check = now.isoformat()  # Update check time to avoid repeated attempts
+            state.save('latest_state.json')
+            return False  # No new images fetched, continue with what we have
+        
         try:
-            # First try to find the last good night (may not be the latest date)
+            # Server is available, proceed with checking for new images
             logging.info("Looking for the last good night across all stations...")
-            station_dirs = find_last_good_night(state.last_good_night_check)
+            station_dirs = find_last_good_night(state.last_good_night_check, state)
             
             if not station_dirs:
                 logging.warning("No good night found, falling back to latest directories")
-                station_dirs = get_latest_dirs_all_stations()
+                station_dirs = get_latest_dirs_all_stations(state, server_available)
             
             state.last_check = now.isoformat()
             state.last_good_night_check = now.isoformat()
@@ -583,6 +627,8 @@ def check_time_and_run(state) -> bool:
             return has_new_images and is_good
         except Exception as e:
             logging.error(f"Could not check stations: {e}")
+            # Continue with existing images rather than crashing
+            return False
     return False
 
 
@@ -618,7 +664,7 @@ if __name__ == "__main__":
 
     if args.fetch_latest_images:
         logging.info("Fetching images from all stations")
-        station_dirs = get_latest_dirs_all_stations()
+        station_dirs = get_latest_dirs_all_stations(state)
         if station_dirs:
             total_fits = fetch_latest_dirs_all_stations(station_dirs)
             logging.info(f"Successfully fetched {total_fits} images from {len(station_dirs)} stations")
@@ -630,7 +676,7 @@ if __name__ == "__main__":
             logging.warning("No stations with images found")
     elif args.find_good_night:
         logging.info("Finding the last good night...")
-        station_dirs = find_last_good_night(state.last_good_night_check)
+        station_dirs = find_last_good_night(state.last_good_night_check, state)
         if station_dirs:
             fits_counts = {station: info['fits_count'] for station, info in station_dirs.items()}
             total_fits = sum(fits_counts.values())
@@ -697,7 +743,7 @@ if __name__ == "__main__":
             
             if should_fetch_good_night:
                 logging.info("Fetching images from last good night...")
-                station_dirs = find_last_good_night(state.last_good_night_check)
+                station_dirs = find_last_good_night(state.last_good_night_check, state)
                 if station_dirs:
                     total_fits = fetch_latest_dirs_all_stations(station_dirs)
                     avg_fits = total_fits / len(station_dirs) if station_dirs else 0
