@@ -22,7 +22,7 @@ import json
 from dataclasses import dataclass, asdict, field
 from tqdm import tqdm
 
-RMS_HOST = 'pi@10.10.0.171'
+RMS_HOST = 'pi@10.10.0.155'
 MIN_FITS_THRESHOLD = 5  # Minimum average FITS files across stations for a "good night"
 # SSH connection reuse options to prevent connection exhaustion on RMS server
 # ControlMaster=auto: reuse existing connections, ControlPersist=300: keep connections alive 5min
@@ -97,15 +97,27 @@ class State:
 class Application():
     images = None
 
-    def __init__(self, state: State, full_screen):
+    def __init__(self, state: State, full_screen, monitor_index=None):
         self.window = tk.Tk()
         self.state = state
+        self.monitor_index = monitor_index
         # tk.Tk.__init__(self, *args, **kwargs)
         self.window.attributes("-topmost", True)
         self.window.attributes("-topmost", False)
 
         self.window.title("Slideshow")
         self.window.resizable(width=True, height=True)
+
+        # Configure display positioning before setting fullscreen (only if monitor specified)
+        if full_screen and monitor_index is not None:
+            self._configure_display_position()
+        elif full_screen:
+            # Just use default fullscreen without specific monitor positioning
+            # Use single monitor dimensions (not combined width of all monitors)
+            self.window.update_idletasks()
+            self.target_width = 1920
+            self.target_height = 1080
+
         self.window.attributes("-fullscreen", full_screen)
         self.current_slide = tk.Label(bg="black", highlightbackground='black', highlightcolor='black', highlightthickness=1)
         self.duration_ms = 5000
@@ -118,7 +130,69 @@ class Application():
         self.window.bind("<Escape>", self.exit_fullscreen)
         self.window.bind("<Return>", self.exit_fullscreen)  # Enter key
         self.window.bind("<space>", self.exit_fullscreen)  # Space key
-        self.current_slide.pack()
+        self.current_slide.pack(fill=tk.BOTH, expand=True)
+
+    def _get_primary_monitor(self, monitor_index=0):
+        """Detect primary monitor using DRM on Wayland"""
+        # Find connected displays
+        drm_path = '/sys/class/drm'
+        connected_displays = []
+
+        for entry in sorted(os.listdir(drm_path)):
+            if any(interface in entry for interface in ['HDMI-A-', 'DP-', 'eDP-']):
+                status_path = f"{drm_path}/{entry}/status"
+                modes_path = f"{drm_path}/{entry}/modes"
+
+                if os.path.exists(status_path) and os.path.exists(modes_path):
+                    with open(status_path, 'r') as f:
+                        if f.read().strip() == 'connected':
+                            with open(modes_path, 'r') as f:
+                                mode = f.readline().strip()
+                                if 'x' in mode:
+                                    width, height = mode.split('x')
+                                    connected_displays.append({
+                                        'name': entry,
+                                        'width': int(width),
+                                        'height': int(height),
+                                        'x': 0,  # Will be calculated based on index
+                                        'y': 0
+                                    })
+
+        if not connected_displays:
+            logging.error("No connected displays found!")
+            return {'name': 'fallback', 'width': 1920, 'height': 1080, 'x': 0, 'y': 0}
+
+        # Physical layout: HDMI-A-2 (left) and HDMI-A-1 (right) due to cabling
+        # Reverse display order to match physical layout
+        connected_displays.reverse()
+
+        # Calculate x offsets based on monitor positions (left to right)
+        x_offset = 0
+        for i, display in enumerate(connected_displays):
+            display['x'] = x_offset
+            x_offset += display['width']
+
+        # Select the requested monitor
+        if monitor_index >= len(connected_displays):
+            logging.warning(f"Monitor index {monitor_index} not available, using monitor 0")
+            monitor_index = 0
+
+        target_display = connected_displays[monitor_index]
+        logging.info(f"Selected monitor {monitor_index}: {target_display['name']} at position ({target_display['x']}, {target_display['y']}) with size {target_display['width']}x{target_display['height']}")
+        return target_display
+    
+    def _configure_display_position(self):
+        """Configure window position for selected monitor"""
+        self.window.update_idletasks()
+
+        monitor = self._get_primary_monitor(self.monitor_index)
+        geometry = f"{monitor['width']}x{monitor['height']}+{monitor['x']}+{monitor['y']}"
+        self.window.geometry(geometry)
+
+        self.target_width = monitor['width']
+        self.target_height = monitor['height']
+
+        logging.info(f"Configured for monitor {self.monitor_index}: {geometry}")
 
     def exit_fullscreen(self, event=None):
         # To toggle fullscreen off
@@ -169,12 +243,17 @@ class Application():
         """Resizes an image proportionally to fit within the given width and height."""
         width, height = img.size
         aspect_ratio = width / height
-        new_width = min(max_width, width)
-        new_height = int(new_width / aspect_ratio)
-
-        if new_height > max_height:
-            new_height = min(max_height, height)
-            new_width = int(new_height * aspect_ratio)
+        
+        # Calculate scaling factors for both dimensions
+        scale_width = max_width / width
+        scale_height = max_height / height
+        
+        # Use the smaller scale factor to ensure the image fits within the screen
+        scale = min(scale_width, scale_height)
+        
+        # Calculate new dimensions
+        new_width = int(width * scale)
+        new_height = int(height * scale)
 
         resized_img = img.resize((new_width, new_height), Resampling.BICUBIC)
         # Create new image with screen dimensions (not original image dimensions)
@@ -267,8 +346,16 @@ class Application():
     def create_image_cycle(self, path):
         image_paths = list(Path(path).glob("*.png"))
         image_paths.sort()
-        width = self.window.winfo_screenwidth()
-        height = self.window.winfo_screenheight()
+        
+        # Use target dimensions if available (single monitor), otherwise fallback to screen dimensions
+        if hasattr(self, 'target_width') and hasattr(self, 'target_height'):
+            width = self.target_width
+            height = self.target_height
+        else:
+            width = self.window.winfo_screenwidth()
+            height = self.window.winfo_screenheight()
+            
+        logging.debug(f"Using display dimensions: {width}x{height}")
         thezip = self.create_zip(image_paths, width, height)
         return cycle(thezip)
 
@@ -399,32 +486,37 @@ def find_last_good_night(last_checked_date: str = None, state: State = None) -> 
     meets the MIN_FITS_THRESHOLD. Goes back in time until a good night is found.
     Args:
         last_checked_date: ISO date string (YYYY-MM-DD) of the last time we checked.
-                          If provided, only check dates after this date.
+                          If provided, start checking from dates after this date.
     Returns: dict of {station: {'directory': dir_name, 'fits_count': count}}
     """
     from datetime import datetime, timedelta
     
-    # Start from today and go back
     current_date = datetime.now()
     
-    # Always start from today (0 days back) and work backwards
-    start_days_back = 0
+    # Determine the starting point for checking
     if last_checked_date:
         try:
             last_checked = datetime.fromisoformat(last_checked_date)
-            days_since_last_check = (current_date - last_checked).days
-            logging.debug(f"Last check was {last_checked_date}, starting check from current date ({days_since_last_check} days since last check)")
+            # Start checking from yesterday (to get fresh data) but not older than last check
+            yesterday = current_date - timedelta(days=1)
+            start_date = max(last_checked.date(), yesterday.date())
+            logging.info(f"Last check was {last_checked_date}, starting fresh check from {start_date}")
         except ValueError:
-            logging.warning(f"Invalid last_checked_date format: {last_checked_date}, starting from today")
-            start_days_back = 0
+            logging.warning(f"Invalid last_checked_date format: {last_checked_date}, starting from yesterday")
+            start_date = (current_date - timedelta(days=1)).date()
+    else:
+        # First time checking - start from yesterday
+        start_date = (current_date - timedelta(days=1)).date()
+        logging.info("First time checking - starting from yesterday")
     
     max_days_back = 30  # Don't go back more than 30 days
     
-    for days_back in range(start_days_back, max_days_back):
-        check_date = current_date - timedelta(days=days_back)
+    # Check from start_date backwards to find the most recent good night
+    for days_back in range(0, max_days_back):
+        check_date = start_date - timedelta(days=days_back)
         date_pattern = check_date.strftime("%Y%m%d")
         
-        logging.info(f"Checking night {date_pattern} ({days_back} days ago)")
+        logging.info(f"Checking night {date_pattern} ({check_date})")
         
         station_dirs = get_station_dirs_for_date(date_pattern, state)
         if not station_dirs:
@@ -444,7 +536,7 @@ def find_last_good_night(last_checked_date: str = None, state: State = None) -> 
             avg_fits = total_fits / len(fits_counts) if fits_counts else 0
             logging.debug(f"Clouded night: {date_pattern} with {total_fits} total fits, average {avg_fits:.1f} per station")
     
-    logging.warning(f"No good night found in the checked date range")
+    logging.warning(f"No good night found in the checked date range from {start_date}")
     return {}
 
 
@@ -623,16 +715,20 @@ def check_time_and_run(state) -> bool:
     elif not is_time_for_updating(state.last_check):
         return False
     
-    # Proceed with check
-    if now.hour >= 9 and is_time_for_updating(state.last_check) and is_time_for_server_check(state.last_server_check):
+    # Proceed with check if it's time to update images
+    if now.hour >= 9 and is_time_for_updating(state.last_check):
         logging.info(f"Time to check for new images (after 9 AM and last check: {state.last_check})")
-        # First check if server is available
-        logging.info(f"Checking if RMS server {RMS_HOST} is available...")
-        server_available = is_server_available()
-        logging.info(f"Server availability check result: {server_available}")
         
-        # Always update last_server_check timestamp regardless of availability
-        state.last_server_check = now.isoformat()
+        # Check server availability if enough time has passed since last server check
+        server_available = True  # Assume available unless we need to check
+        if is_time_for_server_check(state.last_server_check):
+            logging.info(f"Checking if RMS server {RMS_HOST} is available...")
+            server_available = is_server_available()
+            logging.info(f"Server availability check result: {server_available}")
+            # Update server check timestamp
+            state.last_server_check = now.isoformat()
+        else:
+            logging.info(f"Skipping server check (last check: {state.last_server_check})")
         
         if not server_available:
             logging.warning(f"RMS server ({RMS_HOST}) is not available - continuing with existing images")
@@ -734,6 +830,7 @@ if __name__ == "__main__":
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     # parser.add_argument('-n', '--no-update', action='store_true', help='Do not update the images')
     parser.add_argument('-F', '--full-screen', action='store_true', help='Full screen')
+    parser.add_argument('-m', '--monitor', type=int, default=None, help='Monitor index to use (0=first, 1=second, etc.). Default: let window manager decide.')
 
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
@@ -875,7 +972,7 @@ if __name__ == "__main__":
             app_temp.convert_all_fits(state.image_dir)
             logging.info("Image conversion completed")
         
-        application = Application(full_screen=args.full_screen, state=state)
+        application = Application(full_screen=args.full_screen, state=state, monitor_index=args.monitor)
         application.start()
         application.window.mainloop()
         logging.debug("Starting application")

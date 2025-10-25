@@ -10,7 +10,18 @@
       "Bash(timeout 30 uv run:*)",
       "Bash(ldconfig:*)",
       "Bash(echo $NIX_PATH)",
-      "Bash(export:*)"
+      "Bash(export:*)",
+      "Bash(systemctl:*)",
+      "Read(//nix/store/**)",
+      "Read(//home/astropolis/nixos-config/**)",
+      "Bash(journalctl:*)",
+      "Read(//sys/class/drm/**)",
+      "Bash(for dev in /sys/class/drm/card*/status)",
+      "Bash(done)",
+      "Read(//home/astropolis/allksy/**)",
+      "Read(//run/user/1000/**)",
+      "Bash(SWAYSOCK=/run/user/1000/sway-ipc.1000.1140.sock swaymsg:*)",
+      "Bash(SWAYSOCK=/run/user/1000/sway-ipc.1000.1148.sock swaymsg:*)"
     ],
     "deny": []
   }
