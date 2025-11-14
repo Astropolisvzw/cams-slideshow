@@ -105,7 +105,7 @@ class Application():
         self.window.attributes("-topmost", True)
         self.window.attributes("-topmost", False)
 
-        self.window.title("Slideshow")
+        self.window.title("Cams Slideshow")
         self.window.resizable(width=True, height=True)
 
         # Configure display positioning before setting fullscreen (only if monitor specified)
@@ -379,7 +379,8 @@ class Application():
         self.text_label.config(text=f"({current+1}/{max}) {self.slide_filename_to_date(name)}")
         self.current_slide.config(image=self.next_image)
         self.current_slide.pack()
-        self.window.title(name)
+        # Keep window title fixed as "Cams Slideshow" for i3 window assignment
+        # self.window.title(name)
         self.window.after(self.duration_ms, self.display_next_slide)
 
     def start(self):
