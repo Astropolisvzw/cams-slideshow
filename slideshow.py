@@ -21,6 +21,7 @@ import pytz
 import json
 from dataclasses import dataclass, asdict, field
 from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 RMS_HOST = 'pi@10.10.0.155'
 MIN_FITS_THRESHOLD = 5  # Minimum average FITS files across stations for a "good night"
@@ -121,6 +122,10 @@ class Application():
         self.window.attributes("-fullscreen", full_screen)
         self.current_slide = tk.Label(bg="black", highlightbackground='black', highlightcolor='black', highlightthickness=1)
         self.duration_ms = 5000
+
+        # Create a loading label (centered)
+        self.loading_label = tk.Label(self.window, text="Loading images...", font=("Arial", 48), fg="white", bg="black")
+
         # Create a label with text, specifying the font size and color
         self.text_label = tk.Label(self.window, text="", font=("Arial", 24), fg="white", bg="black", anchor="nw")
         # Position the label in the top left corner
@@ -194,6 +199,22 @@ class Application():
 
         logging.info(f"Configured for monitor {self.monitor_index}: {geometry}")
 
+    def show_loading(self):
+        """Show loading screen"""
+        self.loading_label.place(relx=0.5, rely=0.5, anchor="center")
+        try:
+            self.window.update_idletasks()
+        except:
+            pass  # Ignore errors if window isn't ready yet
+
+    def hide_loading(self):
+        """Hide loading screen"""
+        self.loading_label.place_forget()
+        try:
+            self.window.update_idletasks()
+        except:
+            pass  # Ignore errors if window isn't ready yet
+
     def exit_fullscreen(self, event=None):
         # To toggle fullscreen off
         self.window.attributes("-fullscreen", False)
@@ -242,22 +263,29 @@ class Application():
     def resize_image(self, img, max_width, max_height):
         """Resizes an image proportionally to fit within the given width and height."""
         width, height = img.size
-        aspect_ratio = width / height
-        
+
+        # Convert to RGB if needed - handle RGBA by compositing on black background
+        if img.mode == 'RGBA':
+            rgb_background = Image.new('RGB', img.size, (0, 0, 0))
+            rgb_background.paste(img, mask=img.split()[3])  # Alpha channel as mask
+            img = rgb_background
+        elif img.mode != 'RGB':
+            img = img.convert('RGB')
+
         # Calculate scaling factors for both dimensions
         scale_width = max_width / width
         scale_height = max_height / height
-        
+
         # Use the smaller scale factor to ensure the image fits within the screen
         scale = min(scale_width, scale_height)
-        
+
         # Calculate new dimensions
         new_width = int(width * scale)
         new_height = int(height * scale)
 
         resized_img = img.resize((new_width, new_height), Resampling.BICUBIC)
-        # Create new image with screen dimensions (not original image dimensions)
-        new_img = Image.new("RGB", (max_width, max_height))
+        # Create new image with screen dimensions (black background)
+        new_img = Image.new("RGB", (max_width, max_height), (0, 0, 0))
         new_img.paste(resized_img, ((max_width - new_width) // 2, (max_height - new_height) // 2))
         return new_img
 
@@ -321,32 +349,62 @@ class Application():
     #     png_files = list(Path(path).glob("slide*.png"))
     #     return len(fits_files) == len(png_files)
 
+    def _load_and_resize_image(self, image_path, width, height, index):
+        """Load and resize a single image (thread-safe, no Tkinter calls)"""
+        try:
+            img = Image.open(image_path)
+            resized_img = self.resize_image(img, width, height)
+            return (index, image_path.name, resized_img, None)
+        except Exception as e:
+            logging.error(f"Error loading/resizing image {image_path}: {e}")
+            return None
+
     def create_zip(self, image_paths, width, height):
         max = len(image_paths)
-        logging.debug(f"Resizing images to {width}x{height}")
-        
-        # Create progress bar for image processing
-        paths_as_strings = [x.name for x in image_paths]
+        logging.info(f"Loading {len(image_paths)} images...")
+
+        # Step 1: Load and resize images in parallel (CPU-intensive work)
+        resized_images = [None] * len(image_paths)
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = {
+                executor.submit(self._load_and_resize_image, path, width, height, i): i
+                for i, path in enumerate(image_paths)
+            }
+
+            with tqdm(total=len(image_paths), desc="Loading images", unit="image") as pbar:
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result:
+                        index, name, resized_img, _ = result
+                        resized_images[index] = (index, name, resized_img)
+                    pbar.update(1)
+
+        # Step 2: Create PhotoImage objects on main thread (Tkinter isn't thread-safe)
         thezip = []
-        
-        with tqdm(image_paths, desc="Processing images", unit="image") as pbar:
-            for current, image_path in enumerate(pbar):
-                try:
-                    # Load, resize and convert to PhotoImage
-                    img = Image.open(image_path)
-                    resized_img = self.resize_image(img, width, height)
-                    photoimage = ImageTk.PhotoImage(resized_img)
-                    
-                    thezip.append((current, max, image_path.name, photoimage))
-                except Exception as e:
-                    logging.error(f"Error processing image {image_path}: {e}")
-                    
+        with tqdm(resized_images, desc="Creating PhotoImages", unit="image") as pbar:
+            for item in pbar:
+                if item:
+                    index, name, resized_img = item
+                    try:
+                        photoimage = ImageTk.PhotoImage(resized_img)
+                        thezip.append((index, max, name, photoimage))
+                    except Exception as e:
+                        logging.error(f"Error creating PhotoImage for {name}: {e}")
+
+        logging.info(f"Loaded {len(thezip)} images successfully")
+        # Keep strong reference to prevent garbage collection of PhotoImage objects
+        self._photoimage_cache = thezip
+
         return thezip
 
     def create_image_cycle(self, path):
+        # Show loading screen
+        self.show_loading()
+
         image_paths = list(Path(path).glob("*.png"))
         image_paths.sort()
-        
+
         # Use target dimensions if available (single monitor), otherwise fallback to screen dimensions
         if hasattr(self, 'target_width') and hasattr(self, 'target_height'):
             width = self.target_width
@@ -354,9 +412,13 @@ class Application():
         else:
             width = self.window.winfo_screenwidth()
             height = self.window.winfo_screenheight()
-            
+
         logging.debug(f"Using display dimensions: {width}x{height}")
         thezip = self.create_zip(image_paths, width, height)
+
+        # Hide loading screen
+        self.hide_loading()
+
         return cycle(thezip)
 
     def get_correct_images(self, path):
@@ -371,11 +433,16 @@ class Application():
 
     def display_next_slide(self):
         try:
-            self.images = self.get_correct_images(self.state.image_dir)
+            images = self.get_correct_images(self.state.image_dir)
+            current, max, name, photo = next(images)
         except Exception as e:
             logging.error(f"Could not get images: {e}")
             return
-        current, max, name, self.next_image = next(self.images)
+
+        # Keep strong references to prevent garbage collection
+        self.next_image = photo  # Prevent PhotoImage from being garbage collected
+        self.images = images  # Keep reference to current cycle
+
         self.text_label.config(text=f"({current+1}/{max}) {self.slide_filename_to_date(name)}")
         self.current_slide.config(image=self.next_image)
         self.current_slide.pack()
@@ -740,19 +807,14 @@ def check_time_and_run(state) -> bool:
         try:
             # Server is available, proceed with checking for new images
             last_check_msg = f" (last check: {state.last_check})" if state.last_check else " (first time checking)"
-            logging.info(f"Server available! Looking for the last good night across all stations{last_check_msg}")
-            station_dirs = find_last_good_night(state.last_check, state)
-            
+            logging.info(f"Server available! Checking last night's image quality{last_check_msg}")
+
+            # Get latest directories from all stations to check quality
+            station_dirs = get_latest_dirs_all_stations(state, server_available)
             if not station_dirs:
-                logging.warning("No good night found in recent history, falling back to latest directories from each station")
-                station_dirs = get_latest_dirs_all_stations(state, server_available)
-                if station_dirs:
-                    fits_counts = {station: info['fits_count'] for station, info in station_dirs.items()}
-                    total_fits = sum(fits_counts.values())
-                    avg_fits = total_fits / len(fits_counts) if fits_counts else 0
-                    logging.info(f"Fallback found {len(station_dirs)} stations with {total_fits} total fits (avg {avg_fits:.1f} per station)")
-                else:
-                    logging.error("No stations with images found in fallback check")
+                logging.error("No stations with images found")
+                state.save('latest_state.json')
+                return False
             
             state.last_check = now.isoformat()
 
@@ -771,31 +833,31 @@ def check_time_and_run(state) -> bool:
             else:
                 logging.info("No new images found - all stations have same directories as before")
 
-            # Also check if we have a good night (average threshold met)
+            # Evaluate night quality - only fetch if it was a good night
             fits_counts = {station: info['fits_count'] for station, info in station_dirs.items()}
-            is_good = is_good_night(fits_counts, "current candidate night")
+            is_good = is_good_night(fits_counts, "last night")
             total_fits = sum(fits_counts.values()) if fits_counts else 0
             avg_fits = total_fits / len(fits_counts) if fits_counts else 0
-            
+
             if is_good:
-                logging.info(f"Good night confirmed: {total_fits} total fits, average {avg_fits:.1f} per station (>= {MIN_FITS_THRESHOLD} threshold)")
+                logging.info(f"Good night: {total_fits} total fits, average {avg_fits:.1f} per station (>= {MIN_FITS_THRESHOLD} threshold)")
             else:
-                logging.info(f"Poor night quality: {total_fits} total fits, average {avg_fits:.1f} per station (< {MIN_FITS_THRESHOLD} threshold)")
-            
-            # Decision logic with clear logging
+                logging.info(f"Cloudy night: {total_fits} total fits, average {avg_fits:.1f} per station (< {MIN_FITS_THRESHOLD} threshold) - keeping previous images")
+
+            # Only fetch if: (new images AND good night) OR first run
             should_fetch = (has_new_images and is_good) or not state.active_stations
             
             if should_fetch:
                 if not state.active_stations:
-                    logging.info("No previous active stations - fetching initial images regardless of quality")
+                    logging.info("First run - fetching initial images")
                 else:
-                    logging.info("Conditions met for fetching new images: new images found AND good night quality")
-                
+                    logging.info(f"Good night with new images - fetching from all {len(station_dirs)} stations")
+
                 logging.info(f"Starting fetch from {len(station_dirs)} stations...")
                 total_fits = fetch_latest_dirs_all_stations(station_dirs)
                 avg_fits = total_fits / len(station_dirs) if station_dirs else 0
                 logging.info(f"Successfully fetched {total_fits} total images from {len(station_dirs)} stations (avg {avg_fits:.1f} per station)")
-                
+
                 state.last_switch = state.last_check
                 state.active_stations = list(station_dirs.keys())
                 logging.info(f"Updated active stations: {state.active_stations}")
@@ -809,12 +871,12 @@ def check_time_and_run(state) -> bool:
                 if not has_new_images:
                     reasons.append("no new images")
                 if not is_good:
-                    reasons.append(f"poor quality (avg {avg_fits:.1f} < {MIN_FITS_THRESHOLD})")
-                
-                logging.info(f"Not fetching new images: {' and '.join(reasons)} - keeping existing images")
+                    reasons.append(f"cloudy night (avg {avg_fits:.1f} < {MIN_FITS_THRESHOLD})")
+
+                logging.info(f"Not fetching: {' and '.join(reasons)} - keeping existing images from last good night")
 
             state.save('latest_state.json')
-            logging.info(f"Check completed for stations: {list(station_dirs.keys())}. Updated state saved.")
+            logging.info(f"Check completed. Updated state saved.")
             return has_new_images and is_good
         except Exception as e:
             logging.error(f"Could not check stations: {e}")
@@ -974,8 +1036,10 @@ if __name__ == "__main__":
             logging.info("Image conversion completed")
         
         application = Application(full_screen=args.full_screen, state=state, monitor_index=args.monitor)
+        logging.debug("Starting slideshow application")
         application.start()
+        logging.debug("Entering mainloop")
         application.window.mainloop()
-        logging.debug("Starting application")
+        logging.info("Mainloop exited - application closed")
         # except:
         #     logging.error("Unexpected error: %s", sys.exc_info()[0])
